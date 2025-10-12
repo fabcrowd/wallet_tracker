@@ -7,33 +7,108 @@ const path = require('path');
 const TOTAL_TEL_SUPPLY = 92_577_234_366;
 const RETAIL_THRESHOLD = 1_000;
 const MEGA_HOLDER_THRESHOLD = 20_000_000_000;
-const API_KEY = process.env.MORALIS_API_KEY;
-const API_BASE_URL = 'https://deep-index.moralis.io/api/v2.2/erc20';
+const DUNE_API_KEY = process.env.DUNE_API_KEY;
+const DUNE_QUERY_ID = process.env.DUNE_QUERY_ID || '5949529';
+const DUNE_BASE_URL = 'https://api.dune.com/api/v1';
 const OUTPUT_PATH = path.resolve(__dirname, '..', 'public', 'data', 'tel-holders.json');
 const CHAINS_CONFIG_PATH = path.resolve(__dirname, '..', 'config', 'chains.json');
 const EXCLUSIONS_PATH = path.resolve(__dirname, '..', 'config', 'exclusions.json');
 
-if (!API_KEY) {
-  console.error('Missing MORALIS_API_KEY environment variable.');
+if (!DUNE_API_KEY) {
+  console.error('Missing DUNE_API_KEY environment variable.');
   process.exit(1);
 }
 
-const chains = JSON.parse(fs.readFileSync(CHAINS_CONFIG_PATH, 'utf8'));
-const exclusionSet = new Set(JSON.parse(fs.readFileSync(EXCLUSIONS_PATH, 'utf8')).map((addr) => addr.toLowerCase()));
+const chainsConfig = JSON.parse(fs.readFileSync(CHAINS_CONFIG_PATH, 'utf8'));
+const exclusionSet = new Set(
+  JSON.parse(fs.readFileSync(EXCLUSIONS_PATH, 'utf8')).map((addr) => addr.toLowerCase())
+);
 
-async function fetchJson(url) {
-  const response = await fetch(url, {
+async function duneFetchJson(endpoint, init = {}) {
+  const response = await fetch(`${DUNE_BASE_URL}${endpoint}`, {
+    ...init,
     headers: {
-      'X-API-Key': API_KEY
+      'Content-Type': 'application/json',
+      'X-Dune-API-Key': DUNE_API_KEY,
+      ...(init.headers || {})
     }
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Request failed (${response.status}): ${text}`);
+    throw new Error(`Dune API error (${response.status}): ${text}`);
   }
 
   return response.json();
+}
+
+async function executeQuery(queryId) {
+  const data = await duneFetchJson(`/query/${queryId}/execute`, { method: 'POST' });
+  if (!data.execution_id) {
+    throw new Error('Dune response missing execution_id');
+  }
+  return data.execution_id;
+}
+
+async function waitForCompletion(executionId, { pollInterval = 5_000, timeout = 600_000 } = {}) {
+  const start = Date.now();
+
+  while (true) {
+    const status = await duneFetchJson(`/execution/${executionId}/status`);
+    const state = status.state;
+
+    if (state === 'QUERY_STATE_COMPLETED') {
+      return;
+    }
+
+    if (state === 'QUERY_STATE_FAILED' || state === 'QUERY_STATE_CANCELLED') {
+      throw new Error(`Dune query failed: ${JSON.stringify(status)}`);
+    }
+
+    if (Date.now() - start > timeout) {
+      throw new Error('Timed out waiting for Dune query to finish');
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
+  }
+}
+
+async function fetchResults(executionId) {
+  const rows = [];
+  let offset = 0;
+  const limit = 50_000;
+
+  while (true) {
+    const result = await duneFetchJson(
+      `/execution/${executionId}/results?limit=${limit}&offset=${offset}`
+    );
+
+    const pageRows = result.result?.rows ?? [];
+    rows.push(...pageRows);
+
+    const nextOffset =
+      result.next_offset ?? result.result?.next_offset ?? result.result?.metadata?.next_offset;
+
+    if (nextOffset == null) {
+      break;
+    }
+
+    offset = nextOffset;
+  }
+
+  return rows;
+}
+
+function normalizeAddress(value) {
+  if (!value) return null;
+  const raw = String(value);
+  if (raw.startsWith('0x') || raw.startsWith('0X')) {
+    return raw.toLowerCase();
+  }
+  if (raw.startsWith('\\x') || raw.startsWith('\\X')) {
+    return `0x${raw.slice(2).toLowerCase()}`;
+  }
+  return `0x${raw.toLowerCase()}`;
 }
 
 function computeMetrics(holders, totalRetailSupply) {
@@ -103,64 +178,44 @@ function calculateDistribution(holders) {
   });
 }
 
-async function fetchChainHolders(chainKey, chainConfig) {
+function processChain(chainKey, rows) {
+  const label = chainsConfig[chainKey]?.label ?? chainKey;
   const holders = [];
   const excludedAddresses = new Set();
   let excludedBalance = 0;
   let totalProcessed = 0;
-  let cursor = null;
 
-  console.log(`Fetching holders for ${chainConfig.label}...`);
+  rows.forEach((row) => {
+    const address = normalizeAddress(row.address);
+    const balance = Number(row.telcoin_balance ?? row.amount ?? 0);
 
-  while (true) {
-    const url = new URL(`${API_BASE_URL}/${chainConfig.contract}/owners`);
-    url.searchParams.set('chain', chainConfig.chain);
-    url.searchParams.set('limit', '100');
-    if (cursor) {
-      url.searchParams.set('cursor', cursor);
+    if (!address || Number.isNaN(balance)) {
+      return;
     }
 
-    const data = await fetchJson(url);
-    const results = data.result ?? [];
-    if (!results.length) {
-      break;
+    totalProcessed += balance;
+
+    if (exclusionSet.has(address) || balance > MEGA_HOLDER_THRESHOLD) {
+      excludedAddresses.add(address);
+      excludedBalance += balance;
+      return;
     }
 
-    for (const owner of results) {
-      const address = (owner.owner_address || owner.address || '').toLowerCase();
-      const balance = parseFloat(owner.balance_formatted ?? owner.balance ?? '0');
-      if (!address || Number.isNaN(balance)) continue;
-
-      totalProcessed += balance;
-
-      if (exclusionSet.has(address) || balance > MEGA_HOLDER_THRESHOLD) {
-        excludedAddresses.add(address);
-        excludedBalance += balance;
-        continue;
-      }
-
-      if (balance >= RETAIL_THRESHOLD) {
-        holders.push({
-          address,
-          balance,
-          chain: chainConfig.label
-        });
-      }
+    if (balance >= RETAIL_THRESHOLD) {
+      holders.push({
+        address,
+        balance,
+        chain: label
+      });
     }
-
-    const lastBalance = parseFloat(results.at(-1)?.balance_formatted ?? results.at(-1)?.balance ?? '0');
-    cursor = data.cursor ?? null;
-
-    if (!cursor) break;
-    if (!Number.isNaN(lastBalance) && lastBalance < RETAIL_THRESHOLD) break;
-  }
+  });
 
   holders.sort((a, b) => b.balance - a.balance);
   const totalRetailSupply = holders.reduce((sum, holder) => sum + holder.balance, 0);
 
   return {
     key: chainKey,
-    label: chainConfig.label,
+    label,
     holders,
     totalRetailSupply,
     retailHolderCount: holders.length,
@@ -212,16 +267,29 @@ function buildCombinedDataset(chainResults) {
 }
 
 async function main() {
-  const chainResults = {};
+  console.log(`Executing Dune query ${DUNE_QUERY_ID}...`);
+  const executionId = await executeQuery(DUNE_QUERY_ID);
+  await waitForCompletion(executionId);
+  console.log('Fetching query results...');
+  const rows = await fetchResults(executionId);
 
-  for (const [chainKey, config] of Object.entries(chains)) {
-    try {
-      chainResults[chainKey] = await fetchChainHolders(chainKey, config);
-    } catch (error) {
-      console.error(`Failed to fetch data for ${config.label}: ${error.message}`);
-      throw error;
-    }
+  if (!rows.length) {
+    throw new Error('Dune query returned no rows.');
   }
+
+  const rowsByChain = rows.reduce((acc, row) => {
+    const key = (row.blockchain || row.chain || '').toLowerCase();
+    if (!key) return acc;
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(row);
+    return acc;
+  }, {});
+
+  const chainResults = {};
+  Object.keys(chainsConfig).forEach((chainKey) => {
+    const chainRows = rowsByChain[chainKey] || [];
+    chainResults[chainKey] = processChain(chainKey, chainRows);
+  });
 
   const combined = buildCombinedDataset(chainResults);
   const payload = {
@@ -235,7 +303,7 @@ async function main() {
     },
     chains: chainResults,
     combined,
-    chainOrder: Object.keys(chains)
+    chainOrder: Object.keys(chainsConfig)
   };
 
   const serialized = `${JSON.stringify(payload, null, 2)}\n`;
