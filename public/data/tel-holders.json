@@ -1,0 +1,47 @@
+{
+  "generatedAt": null,
+  "thresholds": {
+    "retail": 1000,
+    "megaHolder": 20000000000
+  },
+  "totals": {
+    "totalSupply": 92577234366
+  },
+  "chains": {},
+  "combined": {
+    "key": "combined",
+    "label": "Combined",
+    "holders": [],
+    "totalRetailSupply": 0,
+    "retailHolderCount": 0,
+    "excludedAddresses": [],
+    "excludedBalances": {},
+    "totalProcessedByChain": {},
+    "metrics": {
+      "top10": {
+        "count": 0,
+        "balance": 0,
+        "percentage": "0.00"
+      },
+      "top25": {
+        "count": 0,
+        "balance": 0,
+        "percentage": "0.00"
+      },
+      "top50": {
+        "count": 0,
+        "balance": 0,
+        "percentage": "0.00"
+      },
+      "top100": {
+        "count": 0,
+        "balance": 0,
+        "percentage": "0.00"
+      },
+      "gini": 0,
+      "stdDev": 0,
+      "distribution": []
+    }
+  },
+  "chainOrder": []
+}
