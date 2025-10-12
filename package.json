@@ -1,0 +1,9 @@
+{
+  "name": "tel-holder-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Automated TEL token holder snapshot generator",
+  "scripts": {
+    "pull:holders": "node scripts/pull-holders.js"
+  }
+}
