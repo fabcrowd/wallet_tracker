@@ -26,7 +26,7 @@ jobs:
       - name: Pull latest TEL holder data from Dune
         env:
           DUNE_API_KEY: ${{ secrets.DUNE_API_KEY }}
-          DUNE_QUERY_ID: 5949529
+          DUNE_QUERY_ID: ${{ secrets.DUNE_QUERY_ID }}
         run: node scripts/pull-holders.js
 
       - name: Detect file changes
