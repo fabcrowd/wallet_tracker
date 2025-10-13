@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 const TOTAL_TEL_SUPPLY = 92_577_234_366;
-const RETAIL_THRESHOLD = 1_000;
+const RETAIL_THRESHOLD = 0;
 const MEGA_HOLDER_THRESHOLD = 20_000_000_000;
 const DUNE_API_KEY = process.env.DUNE_API_KEY;
 const DUNE_QUERY_ID = process.env.DUNE_QUERY_ID || '5949529';
